@@ -291,7 +291,7 @@ int sim_bringup(void)
 #endif
 
 #ifdef CONFIG_VIDEO_FB
-  /* Initialize and register the simulated framebuffer driver */
+  /* Initialize and register the simulated framebuffer driver(s) */
 
 #  ifdef CONFIG_VNCSERVER
   ret = vnc_fb_register(0);
@@ -300,10 +300,26 @@ int sim_bringup(void)
       syslog(LOG_ERR, "ERROR: vnc_fb_register() failed: %d\n", ret);
     }
 #  else
-  ret = fb_register(0, 0);
-  if (ret < 0)
     {
-      syslog(LOG_ERR, "ERROR: fb_register() failed: %d\n", ret);
+      int display;
+
+#    ifndef CONFIG_SIM_X11NWINDOWS
+#      define CONFIG_SIM_X11NWINDOWS 1
+#    endif
+
+      for (display = 0; display < CONFIG_SIM_X11NWINDOWS; display++)
+        {
+          ret = fb_register(display, 0);
+          if (ret < 0)
+            {
+              syslog(LOG_ERR, "ERROR: fb_register(%d) failed: %d\n",
+                     display, ret);
+            }
+          else
+            {
+              syslog(LOG_INFO, "Registered /dev/fb%d\n", display);
+            }
+        }
     }
 #  endif
 #endif

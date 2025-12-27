@@ -187,8 +187,6 @@ void sim_buttonevent(int x, int y, int buttons)
       return;
     }
 
-  iinfo("x=%d y=%d buttons=%02x\n", x, y, buttons);
-
   /* Any button press will count as pendown. */
 
   pendown = (buttons != 0);

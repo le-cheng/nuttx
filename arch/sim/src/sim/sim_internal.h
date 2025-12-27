@@ -315,15 +315,22 @@ void sim_registerblockdevice(void);
 /* sim_x11framebuffer.c *****************************************************/
 
 #ifdef CONFIG_SIM_X11FB
-int sim_x11initialize(unsigned short width, unsigned short height,
+
+#ifndef CONFIG_SIM_X11NWINDOWS
+#  define CONFIG_SIM_X11NWINDOWS 1
+#endif
+
+int sim_x11initialize(int displayno, unsigned short width, unsigned short height,
                       void **fbmem, size_t *fblen, unsigned char *bpp,
                       unsigned short *stride, int fbcount, int interval);
-int sim_x11update(void);
-int sim_x11openwindow(void);
-int sim_x11closewindow(void);
-int sim_x11setoffset(unsigned int offset);
+int sim_x11update(int displayno);
+int sim_x11openwindow(int displayno);
+int sim_x11closewindow(int displayno);
+int sim_x11setoffset(int displayno, unsigned int offset);
+int sim_x11getdisplayno(unsigned long window);
+unsigned short sim_x11getwidth(void);
 #ifdef CONFIG_FB_CMAP
-int sim_x11cmap(unsigned short first, unsigned short len,
+int sim_x11cmap(int displayno, unsigned short first, unsigned short len,
                 unsigned char *red, unsigned char *green,
                 unsigned char *blue, unsigned char  *transp);
 #endif
@@ -354,7 +361,7 @@ void sim_buttonevent(int x, int y, int buttons);
 /* sim_framebuffer.c sim_lcd.c **********************************************/
 
 #if defined(CONFIG_SIM_LCDDRIVER) || defined(CONFIG_SIM_FRAMEBUFFER)
-void sim_x11loop(void);
+void sim_x11loop(void *arg);
 #endif
 
 /* sim_ajoystick.c **********************************************************/

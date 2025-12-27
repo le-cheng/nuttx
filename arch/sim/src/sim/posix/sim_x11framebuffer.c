@@ -38,7 +38,15 @@
 #include "sim_internal.h"
 
 /****************************************************************************
- * Public Data
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+#ifndef CONFIG_SIM_X11NWINDOWS
+#  define CONFIG_SIM_X11NWINDOWS 1
+#endif
+
+/****************************************************************************
+ * Private Types
  ****************************************************************************/
 
 typedef union
@@ -64,6 +72,32 @@ typedef union
   uint32_t full;
 } x11_color32_t;
 
+/* Per-window context structure */
+
+typedef struct
+{
+  Window window;
+  GC gc;
+#ifndef CONFIG_SIM_X11NOSHM
+  XShmSegmentInfo xshminfo;
+#endif
+  XImage *image;
+  char *framebuffer;
+  unsigned short fbpixelwidth;
+  unsigned short fbpixelheight;
+  int fbbpp;
+  int fblen;
+  int shmcheckpoint;
+  int useshm;
+  unsigned char *trans_framebuffer;
+  unsigned int offset;
+  int initialized;
+} x11_window_t;
+
+/****************************************************************************
+ * Public Data
+ ****************************************************************************/
+
 /* Also used in sim_x11eventloop */
 
 Display *g_display;
@@ -73,23 +107,13 @@ Display *g_display;
  ****************************************************************************/
 
 static int g_screen;
-static Window g_window;
-static GC g_gc;
 #ifndef CONFIG_SIM_X11NOSHM
-static XShmSegmentInfo g_xshminfo;
 static int g_xerror;
 #endif
-static XImage *g_image;
-static char *g_framebuffer;
-static unsigned short g_fbpixelwidth;
-static unsigned short g_fbpixelheight;
-static int g_fbbpp;
-static int g_fblen;
-static int g_shmcheckpoint = 0;
-static int b_useshm;
 
-static unsigned char *g_trans_framebuffer;
-static unsigned int g_offset;
+/* Array of window contexts for multi-window support */
+
+static x11_window_t g_windows[CONFIG_SIM_X11NWINDOWS];
 
 /****************************************************************************
  * Private Functions
@@ -99,74 +123,87 @@ static unsigned int g_offset;
  * Name: sim_x11createframe
  ****************************************************************************/
 
-static inline Display *sim_x11createframe(void)
+static inline int sim_x11createframe(int displayno, x11_window_t *win)
 {
-  Display *display;
   XGCValues gcval;
   char *argv[2] =
     {
       "nuttx", NULL
     };
 
-  char *winname = "NuttX";
+  char winname[32];
+  char *winname_ptr;
   char *iconname = "NX";
   XTextProperty winprop;
   XTextProperty iconprop;
   XSizeHints hints;
+  int xpos;
 
-  display = XOpenDisplay(NULL);
-  if (display == NULL)
+  /* Generate unique window name */
+
+  snprintf(winname, sizeof(winname), "NuttX FB%d", displayno);
+  winname_ptr = winname;
+
+  /* Calculate window position - arrange windows side by side */
+
+  xpos = displayno * (win->fbpixelwidth + 10);
+
+  win->window = XCreateSimpleWindow(g_display, DefaultRootWindow(g_display),
+                                    xpos, 0,
+                                    win->fbpixelwidth, win->fbpixelheight, 2,
+                                    BlackPixel(g_display, g_screen),
+                                    BlackPixel(g_display, g_screen));
+
+  if (win->window == None)
     {
-      syslog(LOG_ERR, "Unable to open display.\n");
-      return NULL;
+      return -ENODEV;
     }
 
-  g_screen = DefaultScreen(display);
-  g_window = XCreateSimpleWindow(display, DefaultRootWindow(display),
-                                 0, 0, g_fbpixelwidth, g_fbpixelheight, 2,
-                                 BlackPixel(display, g_screen),
-                                 BlackPixel(display, g_screen));
-
-  XStringListToTextProperty(&winname, 1, &winprop);
+  XStringListToTextProperty(&winname_ptr, 1, &winprop);
   XStringListToTextProperty(&iconname, 1, &iconprop);
 
-  hints.flags  = PSize | PMinSize | PMaxSize;
-  hints.width  = hints.min_width  = hints.max_width  = g_fbpixelwidth;
-  hints.height = hints.min_height = hints.max_height = g_fbpixelheight;
+  hints.flags  = PSize | PMinSize | PMaxSize | PPosition;
+  hints.x      = xpos;
+  hints.y      = 0;
+  hints.width  = hints.min_width  = hints.max_width  = win->fbpixelwidth;
+  hints.height = hints.min_height = hints.max_height = win->fbpixelheight;
 
-  XSetWMProperties(display, g_window, &winprop, &iconprop, argv, 1,
+  XSetWMProperties(g_display, win->window, &winprop, &iconprop, argv, 1,
                    &hints, NULL, NULL);
   XFree(winprop.value);
   XFree(iconprop.value);
 
   /* Select window input events */
 
-#if defined(CONFIG_SIM_AJOYSTICK)
-  XSelectInput(display, g_window,
-               ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
-#else
-  XSelectInput(display, g_window,
-               ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
+  XSelectInput(g_display, win->window,
+               ButtonPressMask | ButtonReleaseMask |
+               PointerMotionMask | ButtonMotionMask |
                KeyPressMask | KeyReleaseMask);
-#endif
 
   /* Release queued events on the display */
 
 #if defined(CONFIG_SIM_TOUCHSCREEN) || defined(CONFIG_SIM_AJOYSTICK) || \
     defined(CONFIG_SIM_BUTTONS)
-  XAllowEvents(display, AsyncBoth, CurrentTime);
+  XAllowEvents(g_display, AsyncBoth, CurrentTime);
 
   /* Grab mouse button 1, enabling mouse-related events */
 
-  XGrabButton(display, Button1, AnyModifier, g_window, 1,
+  XGrabButton(g_display, Button1, AnyModifier, win->window, 1,
               ButtonPressMask | ButtonReleaseMask | ButtonMotionMask,
               GrabModeAsync, GrabModeAsync, None, None);
 #endif
 
   gcval.graphics_exposures = 0;
-  g_gc = XCreateGC(display, g_window, GCGraphicsExposures, &gcval);
+  win->gc = XCreateGC(g_display, win->window, GCGraphicsExposures, &gcval);
 
-  return display;
+  if (win->gc == NULL)
+    {
+      XDestroyWindow(g_display, win->window);
+      win->window = None;
+      return -ENODEV;
+    }
+
+  return 0;
 }
 
 /****************************************************************************
@@ -198,13 +235,65 @@ static void sim_x11traperrors(void)
  ****************************************************************************/
 
 #ifndef CONFIG_SIM_X11NOSHM
-static int sim_x11untraperrors(Display *display)
+static int sim_x11untraperrors(void)
 {
-  XSync(display, 0);
+  XSync(g_display, 0);
   XSetErrorHandler(NULL);
   return g_xerror;
 }
 #endif
+
+/****************************************************************************
+ * Name: sim_x11uninitwindow
+ ****************************************************************************/
+
+static void sim_x11uninitwindow(x11_window_t *win)
+{
+  if (!win->initialized)
+    {
+      return;
+    }
+
+#ifndef CONFIG_SIM_X11NOSHM
+  if (win->shmcheckpoint > 4)
+    {
+      XShmDetach(g_display, &win->xshminfo);
+    }
+
+  if (win->shmcheckpoint > 3)
+    {
+      shmdt(win->xshminfo.shmaddr);
+    }
+
+  if (win->shmcheckpoint > 2)
+    {
+      shmctl(win->xshminfo.shmid, IPC_RMID, 0);
+    }
+#endif
+
+  if (win->shmcheckpoint > 1)
+    {
+#ifdef CONFIG_SIM_X11NOSHM
+      win->image->data = win->framebuffer;
+#endif
+      XDestroyImage(win->image);
+    }
+
+  /* Un-grab the mouse buttons */
+
+#if defined(CONFIG_SIM_TOUCHSCREEN) || defined(CONFIG_SIM_AJOYSTICK) || \
+    defined(CONFIG_SIM_BUTTONS)
+  XUngrabButton(g_display, Button1, AnyModifier, win->window);
+#endif
+
+  if (win->trans_framebuffer)
+    {
+      free(win->trans_framebuffer);
+      win->trans_framebuffer = NULL;
+    }
+
+  win->initialized = 0;
+}
 
 /****************************************************************************
  * Name: sim_x11uninit
@@ -212,65 +301,41 @@ static int sim_x11untraperrors(Display *display)
 
 static void sim_x11uninit(void)
 {
+  int i;
+
   if (g_display == NULL)
     {
       return;
     }
 
-#ifndef CONFIG_SIM_X11NOSHM
-  if (g_shmcheckpoint > 4)
+  for (i = 0; i < CONFIG_SIM_X11NWINDOWS; i++)
     {
-      XShmDetach(g_display, &g_xshminfo);
+      sim_x11uninitwindow(&g_windows[i]);
     }
-
-  if (g_shmcheckpoint > 3)
-    {
-      shmdt(g_xshminfo.shmaddr);
-    }
-
-  if (g_shmcheckpoint > 2)
-    {
-      shmctl(g_xshminfo.shmid, IPC_RMID, 0);
-    }
-#endif
-
-  if (g_shmcheckpoint > 1)
-    {
-#ifdef CONFIG_SIM_X11NOSHM
-      g_image->data = g_framebuffer;
-#endif
-      XDestroyImage(g_image);
-    }
-
-  /* Un-grab the mouse buttons */
-
-#if defined(CONFIG_SIM_TOUCHSCREEN) || defined(CONFIG_SIM_AJOYSTICK) || \
-    defined(CONFIG_SIM_BUTTONS)
-  XUngrabButton(g_display, Button1, AnyModifier, g_window);
-#endif
 
   XCloseDisplay(g_display);
+  g_display = NULL;
 }
 
 /****************************************************************************
- * Name: sim_x11uninitialize
+ * Name: sim_x11cleanupshm
  ****************************************************************************/
 
 #ifndef CONFIG_SIM_X11NOSHM
-static void sim_x11uninitialize(void)
+static void sim_x11cleanupshm(x11_window_t *win)
 {
-  if (g_shmcheckpoint > 1)
+  if (win->shmcheckpoint > 1)
     {
-      if (!b_useshm && g_framebuffer)
+      if (!win->useshm && win->framebuffer)
         {
-          free(g_framebuffer);
-          g_framebuffer = 0;
+          free(win->framebuffer);
+          win->framebuffer = NULL;
         }
     }
 
-  if (g_shmcheckpoint > 0)
+  if (win->shmcheckpoint > 0)
     {
-      g_shmcheckpoint = 1;
+      win->shmcheckpoint = 1;
     }
 }
 #endif
@@ -279,103 +344,104 @@ static void sim_x11uninitialize(void)
  * Name: sim_x11mapsharedmem
  ****************************************************************************/
 
-static inline int sim_x11mapsharedmem(Display *display,
-                                      int depth, unsigned int fblen,
-                                      int fbcount, int interval)
+static inline int sim_x11mapsharedmem(x11_window_t *win, int depth,
+                                      unsigned int fblen, int fbcount,
+                                      int interval)
 {
 #ifndef CONFIG_SIM_X11NOSHM
   Status result;
 #endif
   int fbinterval = 0;
 
-  atexit(sim_x11uninit);
-  g_shmcheckpoint = 1;
-  b_useshm = 0;
+  win->shmcheckpoint = 1;
+  win->useshm = 0;
 
 #ifndef CONFIG_SIM_X11NOSHM
-  if (XShmQueryExtension(display))
+  if (XShmQueryExtension(g_display))
     {
-      b_useshm = 1;
+      win->useshm = 1;
 
       sim_x11traperrors();
-      g_image = XShmCreateImage(display,
-                                DefaultVisual(display, g_screen),
-                                depth, ZPixmap, NULL, &g_xshminfo,
-                                g_fbpixelwidth, g_fbpixelheight);
-      if (sim_x11untraperrors(display))
+      win->image = XShmCreateImage(g_display,
+                                   DefaultVisual(g_display, g_screen),
+                                   depth, ZPixmap, NULL, &win->xshminfo,
+                                   win->fbpixelwidth, win->fbpixelheight);
+      if (sim_x11untraperrors())
         {
-          sim_x11uninitialize();
+          sim_x11cleanupshm(win);
           goto shmerror;
         }
 
-      if (!g_image)
+      if (!win->image)
         {
-          syslog(LOG_ERR, "Unable to create g_image.\n");
+          syslog(LOG_ERR, "Unable to create image for window.\n");
           return -1;
         }
 
-      g_shmcheckpoint++;
+      win->shmcheckpoint++;
 
-      g_xshminfo.shmid = shmget(IPC_PRIVATE,
-                                g_image->bytes_per_line *
-                                (g_image->height * fbcount +
-                                interval * (fbcount - 1)),
-                                IPC_CREAT | 0777);
-      if (g_xshminfo.shmid < 0)
+      win->xshminfo.shmid = shmget(IPC_PRIVATE,
+                                   win->image->bytes_per_line *
+                                   (win->image->height * fbcount +
+                                   interval * (fbcount - 1)),
+                                   IPC_CREAT | 0777);
+      if (win->xshminfo.shmid < 0)
         {
-          sim_x11uninitialize();
+          sim_x11cleanupshm(win);
           goto shmerror;
         }
 
-      g_shmcheckpoint++;
+      win->shmcheckpoint++;
 
-      g_image->data = (char *) shmat(g_xshminfo.shmid, 0, 0);
-      if (g_image->data == ((char *) -1))
+      win->image->data = (char *)shmat(win->xshminfo.shmid, 0, 0);
+      if (win->image->data == ((char *) -1))
         {
-          sim_x11uninitialize();
+          sim_x11cleanupshm(win);
           goto shmerror;
         }
 
-      g_shmcheckpoint++;
+      win->shmcheckpoint++;
 
-      g_xshminfo.shmaddr = g_image->data;
-      g_xshminfo.readOnly = 0;
+      win->xshminfo.shmaddr = win->image->data;
+      win->xshminfo.readOnly = 0;
 
       sim_x11traperrors();
-      result = XShmAttach(display, &g_xshminfo);
-      if (sim_x11untraperrors(display) || !result)
+      result = XShmAttach(g_display, &win->xshminfo);
+      if (sim_x11untraperrors() || !result)
         {
-          sim_x11uninitialize();
+          sim_x11cleanupshm(win);
           goto shmerror;
         }
 
-      g_framebuffer = g_image->data;
-      g_shmcheckpoint++;
+      win->framebuffer = win->image->data;
+      win->shmcheckpoint++;
     }
   else
 #endif
-  if (!b_useshm)
+  if (!win->useshm)
     {
 #ifndef CONFIG_SIM_X11NOSHM
 shmerror:
 #endif
-      b_useshm = 0;
+      win->useshm = 0;
 
-      fbinterval = (depth * g_fbpixelwidth / 8) * interval;
-      g_framebuffer = malloc(fblen * fbcount + fbinterval * (fbcount - 1));
+      fbinterval = (depth * win->fbpixelwidth / 8) * interval;
+      win->framebuffer = malloc(fblen * fbcount +
+                                fbinterval * (fbcount - 1));
 
-      g_image = XCreateImage(display, DefaultVisual(display, g_screen),
-                             depth, ZPixmap, 0, g_framebuffer,
-                             g_fbpixelwidth, g_fbpixelheight,
-                             8, 0);
+      win->image = XCreateImage(g_display,
+                                DefaultVisual(g_display, g_screen),
+                                depth, ZPixmap, 0, win->framebuffer,
+                                win->fbpixelwidth, win->fbpixelheight,
+                                8, 0);
 
-      if (g_image == NULL)
+      if (win->image == NULL)
         {
-          syslog(LOG_ERR, "Unable to create g_image\n");
+          syslog(LOG_ERR, "Unable to create image\n");
           return -1;
         }
 
-      g_shmcheckpoint++;
+      win->shmcheckpoint++;
     }
 
   return 0;
@@ -410,43 +476,76 @@ static inline void sim_x11depth16to32(void *d_mem, size_t size,
  * Name: sim_x11initialize
  *
  * Description:
- *   Make an X11 window look like a frame buffer.
+ *   Initialize an X11 window as a framebuffer.
+ *
+ * Input Parameters:
+ *   displayno - Display number (0, 1, 2, ...)
+ *   width     - Window width
+ *   height    - Window height
+ *   fbmem     - Pointer to framebuffer memory (output)
+ *   fblen     - Framebuffer length (output)
+ *   bpp       - Bits per pixel (output)
+ *   stride    - Bytes per row (output)
+ *   fbcount   - Number of framebuffers
+ *   interval  - Interval lines between framebuffers
  *
  ****************************************************************************/
 
-int sim_x11initialize(unsigned short width, unsigned short height,
-                     void **fbmem, size_t *fblen, unsigned char *bpp,
-                     unsigned short *stride, int fbcount, int interval)
+int sim_x11initialize(int displayno, unsigned short width, unsigned short height,
+                      void **fbmem, size_t *fblen, unsigned char *bpp,
+                      unsigned short *stride, int fbcount, int interval)
 {
   XWindowAttributes windowattributes;
-  Display *display;
+  x11_window_t *win;
   int fbinterval;
   int depth;
 
+  if (displayno < 0 || displayno >= CONFIG_SIM_X11NWINDOWS)
+    {
+      syslog(LOG_ERR, "Invalid display number: %d\n", displayno);
+      return -EINVAL;
+    }
+
+  win = &g_windows[displayno];
+
   /* Save inputs */
 
-  g_fbpixelwidth  = width;
-  g_fbpixelheight = height;
+  win->fbpixelwidth  = width;
+  win->fbpixelheight = height;
 
   if (fbcount < 1)
     {
       return -EINVAL;
     }
 
-  /* Create the X11 window */
+  /* Open display only once for all windows */
 
-  display = sim_x11createframe();
-  if (display == NULL)
+  if (g_display == NULL)
+    {
+      g_display = XOpenDisplay(NULL);
+      if (g_display == NULL)
+        {
+          syslog(LOG_ERR, "Unable to open display.\n");
+          return -ENODEV;
+        }
+
+      g_screen = DefaultScreen(g_display);
+      atexit(sim_x11uninit);
+    }
+
+  /* Create the X11 window for this display */
+
+  if (sim_x11createframe(displayno, win) < 0)
     {
       return -ENODEV;
     }
 
   /* Determine the supported pixel bpp of the current window */
 
-  XGetWindowAttributes(display, DefaultRootWindow(display),
+  XGetWindowAttributes(g_display, DefaultRootWindow(g_display),
                        &windowattributes);
 
-  /* Get the pixel depth.  If the depth is 24-bits, use 32 because X expects
+  /* Get the pixel depth. If the depth is 24-bits, use 32 because X expects
    * 32-bit alignment anyway.
    */
 
@@ -467,11 +566,14 @@ int sim_x11initialize(unsigned short width, unsigned short height,
 
   /* Map the window to shared memory */
 
-  sim_x11mapsharedmem(display, windowattributes.depth,
-                      *fblen, fbcount, interval);
+  if (sim_x11mapsharedmem(win, windowattributes.depth,
+                          *fblen, fbcount, interval) < 0)
+    {
+      return -1;
+    }
 
-  g_fbbpp = depth;
-  g_fblen = *fblen;
+  win->fbbpp = depth;
+  win->fblen = *fblen;
 
   /* Create conversion framebuffer */
 
@@ -482,19 +584,19 @@ int sim_x11initialize(unsigned short width, unsigned short height,
       *fblen = (*stride * height);
       fbinterval = *stride * interval;
 
-      g_trans_framebuffer = malloc(*fblen * fbcount +
-                                   fbinterval * (fbcount - 1));
-      if (g_trans_framebuffer == NULL)
+      win->trans_framebuffer = malloc(*fblen * fbcount +
+                                      fbinterval * (fbcount - 1));
+      if (win->trans_framebuffer == NULL)
         {
-          syslog(LOG_ERR, "Failed to allocate g_trans_framebuffer\n");
+          syslog(LOG_ERR, "Failed to allocate trans_framebuffer\n");
           return -1;
         }
 
-      *fbmem = g_trans_framebuffer;
+      *fbmem = win->trans_framebuffer;
     }
   else
     {
-      *fbmem = g_framebuffer;
+      *fbmem = win->framebuffer;
     }
 
   if (interval == 0)
@@ -502,7 +604,11 @@ int sim_x11initialize(unsigned short width, unsigned short height,
       *fblen *= fbcount;
     }
 
-  g_display = display;
+  win->initialized = 1;
+
+  syslog(LOG_INFO, "X11 window %d initialized: %dx%d\n",
+         displayno, width, height);
+
   return 0;
 }
 
@@ -510,14 +616,28 @@ int sim_x11initialize(unsigned short width, unsigned short height,
  * Name: sim_x11openwindow
  ****************************************************************************/
 
-int sim_x11openwindow(void)
+int sim_x11openwindow(int displayno)
 {
+  x11_window_t *win;
+
   if (g_display == NULL)
     {
       return -ENODEV;
     }
 
-  XMapWindow(g_display, g_window);
+  if (displayno < 0 || displayno >= CONFIG_SIM_X11NWINDOWS)
+    {
+      return -EINVAL;
+    }
+
+  win = &g_windows[displayno];
+
+  if (!win->initialized)
+    {
+      return -ENODEV;
+    }
+
+  XMapWindow(g_display, win->window);
   XSync(g_display, 0);
 
   return 0;
@@ -527,14 +647,28 @@ int sim_x11openwindow(void)
  * Name: sim_x11closewindow
  ****************************************************************************/
 
-int sim_x11closewindow(void)
+int sim_x11closewindow(int displayno)
 {
+  x11_window_t *win;
+
   if (g_display == NULL)
     {
       return -ENODEV;
     }
 
-  XUnmapWindow(g_display, g_window);
+  if (displayno < 0 || displayno >= CONFIG_SIM_X11NWINDOWS)
+    {
+      return -EINVAL;
+    }
+
+  win = &g_windows[displayno];
+
+  if (!win->initialized)
+    {
+      return -ENODEV;
+    }
+
+  XUnmapWindow(g_display, win->window);
   XSync(g_display, 0);
 
   return 0;
@@ -544,21 +678,35 @@ int sim_x11closewindow(void)
  * Name: sim_x11setoffset
  ****************************************************************************/
 
-int sim_x11setoffset(unsigned int offset)
+int sim_x11setoffset(int displayno, unsigned int offset)
 {
+  x11_window_t *win;
+
   if (g_display == NULL)
     {
       return -ENODEV;
     }
 
-  if (g_fbbpp == 32 && CONFIG_SIM_FBBPP == 16)
+  if (displayno < 0 || displayno >= CONFIG_SIM_X11NWINDOWS)
     {
-      g_image->data = g_framebuffer + (offset << 1);
-      g_offset = offset;
+      return -EINVAL;
+    }
+
+  win = &g_windows[displayno];
+
+  if (!win->initialized)
+    {
+      return -ENODEV;
+    }
+
+  if (win->fbbpp == 32 && CONFIG_SIM_FBBPP == 16)
+    {
+      win->image->data = win->framebuffer + (offset << 1);
+      win->offset = offset;
     }
   else
     {
-      g_image->data = g_framebuffer + offset;
+      win->image->data = win->framebuffer + offset;
     }
 
   return 0;
@@ -568,9 +716,10 @@ int sim_x11setoffset(unsigned int offset)
  * Name: sim_x11cmap
  ****************************************************************************/
 
-int sim_x11cmap(unsigned short first, unsigned short len,
-               unsigned char *red, unsigned char *green,
-               unsigned char *blue, unsigned char  *transp)
+#ifdef CONFIG_FB_CMAP
+int sim_x11cmap(int displayno, unsigned short first, unsigned short len,
+                unsigned char *red, unsigned char *green,
+                unsigned char *blue, unsigned char *transp)
 {
   Colormap cmap;
   int ndx;
@@ -580,6 +729,11 @@ int sim_x11cmap(unsigned short first, unsigned short len,
       return -ENODEV;
     }
 
+  if (displayno < 0 || displayno >= CONFIG_SIM_X11NWINDOWS)
+    {
+      return -EINVAL;
+    }
+
   /* Convert each color to X11 scaling */
 
   cmap = DefaultColormap(g_display, g_screen);
@@ -587,7 +741,7 @@ int sim_x11cmap(unsigned short first, unsigned short len,
     {
       XColor color;
 
-      /* Convert to RGB.  In the NuttX cmap, each component
+      /* Convert to RGB. In the NuttX cmap, each component
        * ranges from 0-255; for X11 the range is 0-65536
        */
 
@@ -607,39 +761,92 @@ int sim_x11cmap(unsigned short first, unsigned short len,
 
   return 0;
 }
+#endif
 
 /****************************************************************************
  * Name: sim_x11update
  ****************************************************************************/
 
-int sim_x11update(void)
+int sim_x11update(int displayno)
 {
+  x11_window_t *win;
+
   if (g_display == NULL)
     {
       return -ENODEV;
     }
 
-#ifndef CONFIG_SIM_X11NOSHM
-  if (b_useshm)
+  if (displayno < 0 || displayno >= CONFIG_SIM_X11NWINDOWS)
     {
-      XShmPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0,
-                   g_fbpixelwidth, g_fbpixelheight, 0);
+      return -EINVAL;
+    }
+
+  win = &g_windows[displayno];
+
+  if (!win->initialized)
+    {
+      return -ENODEV;
+    }
+
+#ifndef CONFIG_SIM_X11NOSHM
+  if (win->useshm)
+    {
+      XShmPutImage(g_display, win->window, win->gc, win->image, 0, 0, 0, 0,
+                   win->fbpixelwidth, win->fbpixelheight, 0);
     }
   else
 #endif
     {
-      XPutImage(g_display, g_window, g_gc, g_image, 0, 0, 0, 0,
-                g_fbpixelwidth, g_fbpixelheight);
+      XPutImage(g_display, win->window, win->gc, win->image, 0, 0, 0, 0,
+                win->fbpixelwidth, win->fbpixelheight);
     }
 
-  if (g_fbbpp == 32 && CONFIG_SIM_FBBPP == 16)
+  if (win->fbbpp == 32 && CONFIG_SIM_FBBPP == 16)
     {
-      sim_x11depth16to32(g_image->data,
-                         g_fblen,
-                         g_trans_framebuffer + g_offset);
+      sim_x11depth16to32(win->image->data,
+                         win->fblen,
+                         win->trans_framebuffer + win->offset);
     }
 
   XSync(g_display, 0);
 
   return 0;
+}
+
+/****************************************************************************
+ * Name: sim_x11getdisplayno
+ *
+ * Description:
+ *   Get the display number for a given X11 window handle.
+ *   Used for multi-window coordinate translation.
+ *
+ ****************************************************************************/
+
+int sim_x11getdisplayno(unsigned long window)
+{
+  int i;
+
+  for (i = 0; i < CONFIG_SIM_X11NWINDOWS; i++)
+    {
+      if (g_windows[i].initialized && g_windows[i].window == window)
+        {
+          return i;
+        }
+    }
+
+  return 0;  /* Default to first display */
+}
+
+/****************************************************************************
+ * Name: sim_x11getwidth
+ *
+ * Description:
+ *   Get the configured framebuffer width.
+ *   Used for multi-window coordinate translation.
+ *
+ ****************************************************************************/
+
+unsigned short sim_x11getwidth(void)
+{
+  return CONFIG_SIM_FBWIDTH;
 }

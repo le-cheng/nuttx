@@ -453,6 +453,15 @@ config SIM_X11UPDATE_INTERVAL
 	---help---
 		 X11 update sleep time
 
+config SIM_X11NWINDOWS
+	int "Number of X11 windows"
+	default 1
+	range 1 4
+	---help---
+		Number of X11 windows to create for multi-screen simulation.
+		Each window will have its own framebuffer device (/dev/fb0, /dev/fb1, etc.).
+		Default: 1
+
 menu "Window Configuration"
 
 config SIM_FBHEIGHT

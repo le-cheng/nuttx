@@ -28,6 +28,7 @@
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
 
+#include <syslog.h>
 #include "sim_internal.h"
 
 /****************************************************************************
@@ -94,6 +95,25 @@ static int sim_buttonmap(int state, int button)
  ****************************************************************************/
 
 /****************************************************************************
+ * Name: sim_x11translatecoord
+ *
+ * Description:
+ *   Translate window-local coordinates to virtual screen coordinates
+ *   for multi-window setups.
+ *
+ ****************************************************************************/
+
+#if CONFIG_SIM_X11NWINDOWS > 1
+static int sim_x11translatecoord(Window window, int x)
+{
+  int displayno = sim_x11getdisplayno(window);
+  return x + displayno * sim_x11getwidth();
+}
+#else
+#  define sim_x11translatecoord(w, x) (x)
+#endif
+
+/****************************************************************************
  * Name: sim_x11events
  *
  * Description:
@@ -130,17 +150,21 @@ void sim_x11events(void)
 
           case MotionNotify : /* Enabled by ButtonMotionMask */
             {
-              sim_buttonevent(event.xmotion.x, event.xmotion.y,
-                              sim_buttonmap(event.xmotion.state, 0));
+              int x = sim_x11translatecoord(event.xmotion.window,
+                                            event.xmotion.x);
+              int buttons = sim_buttonmap(event.xmotion.state, 0);
+              sim_buttonevent(x, event.xmotion.y, buttons);
             }
             break;
 
           case ButtonPress  : /* Enabled by ButtonPressMask */
           case ButtonRelease: /* Enabled by ButtonReleaseMask */
             {
-              sim_buttonevent(event.xbutton.x, event.xbutton.y,
-                              sim_buttonmap(event.xbutton.state,
-                                          event.xbutton.button));
+              int x = sim_x11translatecoord(event.xbutton.window,
+                                            event.xbutton.x);
+              int buttons = sim_buttonmap(event.xbutton.state,
+                                          event.xbutton.button);
+              sim_buttonevent(x, event.xbutton.y, buttons);
             }
             break;
 

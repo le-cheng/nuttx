@@ -63,47 +63,54 @@
 #define FB_WIDTH ((CONFIG_SIM_FBWIDTH * CONFIG_SIM_FBBPP + 7) / 8)
 #define FB_SIZE  (FB_WIDTH * CONFIG_SIM_FBHEIGHT)
 
+#ifndef CONFIG_SIM_X11NWINDOWS
+#  define CONFIG_SIM_X11NWINDOWS 1
+#endif
+
+/****************************************************************************
+ * Private Types
+ ****************************************************************************/
+
+/* Per-display context structure */
+
+struct sim_fb_s
+{
+  struct fb_vtable_s vtable;
+  struct fb_videoinfo_s videoinfo;
+  struct fb_planeinfo_s planeinfo;
+  int displayno;
+  int power;
+  int initialized;
+#ifndef CONFIG_SIM_X11FB
+  uint8_t framebuffer[FB_SIZE];
+#endif
+};
+
 /****************************************************************************
  * Private Function Prototypes
  ****************************************************************************/
 
-/* Get information about the video controller configuration and the
- * configuration of each color plane.
- */
-
 static int sim_getvideoinfo(struct fb_vtable_s *vtable,
-                           struct fb_videoinfo_s *vinfo);
+                            struct fb_videoinfo_s *vinfo);
 static int sim_getplaneinfo(struct fb_vtable_s *vtable, int planeno,
-                           struct fb_planeinfo_s *pinfo);
-
-/* The following is provided only if the video hardware supports
- * RGB color mapping.
- */
+                            struct fb_planeinfo_s *pinfo);
 
 #ifdef CONFIG_FB_CMAP
 static int sim_getcmap(struct fb_vtable_s *vtable,
-                      struct fb_cmap_s *cmap);
+                       struct fb_cmap_s *cmap);
 static int sim_putcmap(struct fb_vtable_s *vtable,
-                      const struct fb_cmap_s *cmap);
+                       const struct fb_cmap_s *cmap);
 #endif
-  /* The following is provided only if the video hardware supports
-   * a hardware cursor
-   */
 
 #ifdef CONFIG_FB_HWCURSOR
 static int sim_getcursor(struct fb_vtable_s *vtable,
-                        struct fb_cursorattrib_s *attrib);
+                         struct fb_cursorattrib_s *attrib);
 static int sim_setcursor(struct fb_vtable_s *vtable,
-                        struct fb_setcursor_s *settings);
+                         struct fb_setcursor_s *settings);
 #endif
-
-/* Open/close window. */
 
 static int sim_openwindow(struct fb_vtable_s *vtable);
 static int sim_closewindow(struct fb_vtable_s *vtable);
-
-/* Get/set the panel power status (0: full off). */
-
 static int sim_getpower(struct fb_vtable_s *vtable);
 static int sim_setpower(struct fb_vtable_s *vtable, int power);
 
@@ -111,79 +118,29 @@ static int sim_setpower(struct fb_vtable_s *vtable, int power);
  * Private Data
  ****************************************************************************/
 
-/* The simulated framebuffer memory */
+/* Array of framebuffer objects for multi-display support */
 
-#ifndef CONFIG_SIM_X11FB
-static uint8_t g_fb[FB_SIZE];
-#endif
-
-static int g_fb_power = 100;
-
-/* This structure describes the simulated video controller */
-
-static const struct fb_videoinfo_s g_videoinfo =
-{
-  .fmt      = FB_FMT,
-  .xres     = CONFIG_SIM_FBWIDTH,
-  .yres     = CONFIG_SIM_FBHEIGHT,
-  .nplanes  = 1,
-};
-
-#ifndef CONFIG_SIM_X11FB
-/* This structure describes the single, simulated color plane */
-
-static const struct fb_planeinfo_s g_planeinfo =
-{
-  .fbmem    = (void *)&g_fb,
-  .fblen    = FB_SIZE,
-  .stride   = FB_WIDTH,
-  .display  = 0,
-  .bpp      = CONFIG_SIM_FBBPP,
-};
-#else
-/* This structure describes the single, X11 color plane */
-
-static struct fb_planeinfo_s g_planeinfo;
-#endif
-
-/* Current cursor position */
+static struct sim_fb_s g_fb[CONFIG_SIM_X11NWINDOWS];
 
 #ifdef CONFIG_FB_HWCURSOR
 static struct fb_cursorpos_s g_cpos;
-
-/* Current cursor size */
-
 #ifdef CONFIG_FB_HWCURSORSIZE
 static struct fb_cursorsize_s g_csize;
 #endif
 #endif
 
-/* The framebuffer object -- There is no private state information
- * in this simple framebuffer simulation.
- */
-
-static struct fb_vtable_s g_fbobject =
-{
-  .getvideoinfo  = sim_getvideoinfo,
-  .getplaneinfo  = sim_getplaneinfo,
-#ifdef CONFIG_FB_CMAP
-  .getcmap       = sim_getcmap,
-  .putcmap       = sim_putcmap,
-#endif
-#ifdef CONFIG_FB_HWCURSOR
-  .getcursor     = sim_getcursor,
-  .setcursor     = sim_setcursor,
-#endif
-
-  .open          = sim_openwindow,
-  .close         = sim_closewindow,
-  .getpower      = sim_getpower,
-  .setpower      = sim_setpower,
-};
-
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
+
+/****************************************************************************
+ * Name: sim_getfb
+ ****************************************************************************/
+
+static inline struct sim_fb_s *sim_getfb(struct fb_vtable_s *vtable)
+{
+  return (struct sim_fb_s *)vtable;
+}
 
 /****************************************************************************
  * Name: sim_openwindow
@@ -191,11 +148,13 @@ static struct fb_vtable_s g_fbobject =
 
 static int sim_openwindow(struct fb_vtable_s *vtable)
 {
+  struct sim_fb_s *fb = sim_getfb(vtable);
   int ret = OK;
-  ginfo("vtable=%p\n", vtable);
+
+  ginfo("vtable=%p displayno=%d\n", vtable, fb->displayno);
 
 #ifdef CONFIG_SIM_X11FB
-  ret = sim_x11openwindow();
+  ret = sim_x11openwindow(fb->displayno);
 #endif
 
   return ret;
@@ -207,11 +166,13 @@ static int sim_openwindow(struct fb_vtable_s *vtable)
 
 static int sim_closewindow(struct fb_vtable_s *vtable)
 {
+  struct sim_fb_s *fb = sim_getfb(vtable);
   int ret = OK;
-  ginfo("vtable=%p\n", vtable);
+
+  ginfo("vtable=%p displayno=%d\n", vtable, fb->displayno);
 
 #ifdef CONFIG_SIM_X11FB
-  ret = sim_x11closewindow();
+  ret = sim_x11closewindow(fb->displayno);
 #endif
 
   return ret;
@@ -222,12 +183,14 @@ static int sim_closewindow(struct fb_vtable_s *vtable)
  ****************************************************************************/
 
 static int sim_getvideoinfo(struct fb_vtable_s *vtable,
-                           struct fb_videoinfo_s *vinfo)
+                            struct fb_videoinfo_s *vinfo)
 {
+  struct sim_fb_s *fb = sim_getfb(vtable);
+
   ginfo("vtable=%p vinfo=%p\n", vtable, vinfo);
   if (vtable && vinfo)
     {
-      memcpy(vinfo, &g_videoinfo, sizeof(struct fb_videoinfo_s));
+      memcpy(vinfo, &fb->videoinfo, sizeof(struct fb_videoinfo_s));
       return OK;
     }
 
@@ -240,23 +203,25 @@ static int sim_getvideoinfo(struct fb_vtable_s *vtable,
  ****************************************************************************/
 
 static int sim_getplaneinfo(struct fb_vtable_s *vtable, int planeno,
-                           struct fb_planeinfo_s *pinfo)
+                            struct fb_planeinfo_s *pinfo)
 {
+  struct sim_fb_s *fb = sim_getfb(vtable);
+
   ginfo("vtable=%p planeno=%d pinfo=%p\n", vtable, planeno, pinfo);
   if (vtable && planeno == 0 && pinfo)
     {
 #if CONFIG_SIM_FB_INTERVAL_LINE > 0
       int display = pinfo->display;
 #endif
-      memcpy(pinfo, &g_planeinfo, sizeof(struct fb_planeinfo_s));
+      memcpy(pinfo, &fb->planeinfo, sizeof(struct fb_planeinfo_s));
 
 #if CONFIG_SIM_FB_INTERVAL_LINE > 0
-      if (display - g_planeinfo.display > 0)
+      if (display - fb->planeinfo.display > 0)
         {
           pinfo->display = display;
-          pinfo->fbmem = g_planeinfo.fbmem + g_planeinfo.stride *
+          pinfo->fbmem = fb->planeinfo.fbmem + fb->planeinfo.stride *
              (CONFIG_SIM_FB_INTERVAL_LINE + CONFIG_SIM_FBHEIGHT) *
-             (display - g_planeinfo.display);
+             (display - fb->planeinfo.display);
         }
 #endif
 
@@ -273,7 +238,7 @@ static int sim_getplaneinfo(struct fb_vtable_s *vtable, int planeno,
 
 #ifdef CONFIG_FB_CMAP
 static int sim_getcmap(struct fb_vtable_s *vtable,
-                      struct fb_cmap_s *cmap)
+                       struct fb_cmap_s *cmap)
 {
   int len;
   int i;
@@ -306,11 +271,13 @@ static int sim_getcmap(struct fb_vtable_s *vtable,
 
 #ifdef CONFIG_FB_CMAP
 static int sim_putcmap(struct fb_vtable_s *vtable,
-                      const struct fb_cmap_s *cmap)
+                       const struct fb_cmap_s *cmap)
 {
+  struct sim_fb_s *fb = sim_getfb(vtable);
+
 #ifdef CONFIG_SIM_X11FB
-  return sim_x11cmap(cmap->first, cmap->len, cmap->red, cmap->green,
-                    cmap->blue, NULL);
+  return sim_x11cmap(fb->displayno, cmap->first, cmap->len, cmap->red,
+                     cmap->green, cmap->blue, NULL);
 #else
   ginfo("vtable=%p cmap=%p len=%d\n", vtable, cmap, cmap->len);
   if (vtable && cmap)
@@ -330,7 +297,7 @@ static int sim_putcmap(struct fb_vtable_s *vtable,
 
 #ifdef CONFIG_FB_HWCURSOR
 static int sim_getcursor(struct fb_vtable_s *vtable,
-                        struct fb_cursorattrib_s *attrib)
+                         struct fb_cursorattrib_s *attrib)
 {
   ginfo("vtable=%p attrib=%p\n", vtable, attrib);
   if (vtable && attrib)
@@ -360,20 +327,20 @@ static int sim_getcursor(struct fb_vtable_s *vtable,
 
 #ifdef CONFIG_FB_HWCURSOR
 static int sim_setcursor(struct fb_vtable_s *vtable,
-                       struct fb_setcursor_s *settings)
+                         struct fb_setcursor_s *settings)
 {
   ginfo("vtable=%p settings=%p\n", vtable, settings);
   if (vtable && settings)
     {
       ginfo("flags:   %02x\n", settings->flags);
-      if ((flags & FB_CUR_SETPOSITION) != 0)
+      if ((settings->flags & FB_CUR_SETPOSITION) != 0)
         {
           g_cpos = settings->pos;
           ginfo("pos:     (h:%d, w:%d)\n", g_cpos.x, g_cpos.y);
         }
 
 #ifdef CONFIG_FB_HWCURSORSIZE
-      if ((flags & FB_CUR_SETSIZE) != 0)
+      if ((settings->flags & FB_CUR_SETSIZE) != 0)
         {
           g_csize = settings->size;
           ginfo("size:    (h:%d, w:%d)\n", g_csize.h, g_csize.w);
@@ -381,13 +348,12 @@ static int sim_setcursor(struct fb_vtable_s *vtable,
 #endif
 
 #ifdef CONFIG_FB_HWCURSORIMAGE
-      if ((flags & FB_CUR_SETIMAGE) != 0)
+      if ((settings->flags & FB_CUR_SETIMAGE) != 0)
         {
           ginfo("image:   (h:%d, w:%d) @ %p\n",
-               settings->img.height, settings->img.width,
-               settings->img.image);
+                settings->img.height, settings->img.width,
+                settings->img.image);
         }
-
 #endif
       return OK;
     }
@@ -403,8 +369,10 @@ static int sim_setcursor(struct fb_vtable_s *vtable,
 
 static int sim_getpower(struct fb_vtable_s *vtable)
 {
-  ginfo("vtable=%p power=%d\n", vtable, g_fb_power);
-  return g_fb_power;
+  struct sim_fb_s *fb = sim_getfb(vtable);
+
+  ginfo("vtable=%p power=%d\n", vtable, fb->power);
+  return fb->power;
 }
 
 /****************************************************************************
@@ -413,6 +381,8 @@ static int sim_getpower(struct fb_vtable_s *vtable)
 
 static int sim_setpower(struct fb_vtable_s *vtable, int power)
 {
+  struct sim_fb_s *fb = sim_getfb(vtable);
+
   ginfo("vtable=%p power=%d\n", vtable, power);
   if (power < 0)
     {
@@ -420,7 +390,7 @@ static int sim_setpower(struct fb_vtable_s *vtable, int power)
       return -EINVAL;
     }
 
-  g_fb_power = power;
+  fb->power = power;
   return OK;
 }
 
@@ -433,22 +403,43 @@ static int sim_setpower(struct fb_vtable_s *vtable, int power)
  ****************************************************************************/
 
 #ifdef CONFIG_SIM_X11FB
-void sim_x11loop(void)
+void sim_x11loop(void *arg)
 {
   union fb_paninfo_u info;
+  int i;
+  uint64_t now = host_gettime(false);
+  static uint64_t last;
 
-  fb_notify_vsync(&g_fbobject);
-  if (fb_paninfo_count(&g_fbobject, FB_NO_OVERLAY) > 1)
+  if (now - last >= 16000000)
     {
-      fb_remove_paninfo(&g_fbobject, FB_NO_OVERLAY);
-    }
+      last = now;
 
-  if (fb_peek_paninfo(&g_fbobject, &info, FB_NO_OVERLAY) == OK)
-    {
-      sim_x11setoffset(info.planeinfo.yoffset * info.planeinfo.stride);
-    }
+      /* Update all initialized displays */
 
-  sim_x11update();
+      for (i = 0; i < CONFIG_SIM_X11NWINDOWS; i++)
+        {
+          struct sim_fb_s *fb = &g_fb[i];
+
+          if (!fb->initialized)
+            {
+              continue;
+            }
+
+          fb_notify_vsync(&fb->vtable);
+          if (fb_paninfo_count(&fb->vtable, FB_NO_OVERLAY) > 1)
+            {
+              fb_remove_paninfo(&fb->vtable, FB_NO_OVERLAY);
+            }
+
+          if (fb_peek_paninfo(&fb->vtable, &info, FB_NO_OVERLAY) == OK)
+            {
+              sim_x11setoffset(i, info.planeinfo.yoffset *
+                               info.planeinfo.stride);
+            }
+
+          sim_x11update(i);
+        }
+    }
 }
 #endif
 
@@ -470,18 +461,84 @@ void sim_x11loop(void)
 
 int up_fbinitialize(int display)
 {
+  struct sim_fb_s *fb;
   int ret = OK;
 
+  ginfo("display=%d\n", display);
+
+  if (display < 0 || display >= CONFIG_SIM_X11NWINDOWS)
+    {
+      gerr("ERROR: Invalid display number: %d\n", display);
+      return -EINVAL;
+    }
+
+  fb = &g_fb[display];
+
+  /* Check if already initialized */
+
+  if (fb->initialized)
+    {
+      return OK;
+    }
+
+  /* Initialize the fb structure */
+
+  memset(fb, 0, sizeof(struct sim_fb_s));
+
+  fb->displayno = display;
+  fb->power = 100;
+
+  /* Setup video info */
+
+  fb->videoinfo.fmt     = FB_FMT;
+  fb->videoinfo.xres    = CONFIG_SIM_FBWIDTH;
+  fb->videoinfo.yres    = CONFIG_SIM_FBHEIGHT;
+  fb->videoinfo.nplanes = 1;
+
+  /* Setup vtable */
+
+  fb->vtable.getvideoinfo = sim_getvideoinfo;
+  fb->vtable.getplaneinfo = sim_getplaneinfo;
+#ifdef CONFIG_FB_CMAP
+  fb->vtable.getcmap      = sim_getcmap;
+  fb->vtable.putcmap      = sim_putcmap;
+#endif
+#ifdef CONFIG_FB_HWCURSOR
+  fb->vtable.getcursor    = sim_getcursor;
+  fb->vtable.setcursor    = sim_setcursor;
+#endif
+  fb->vtable.open         = sim_openwindow;
+  fb->vtable.close        = sim_closewindow;
+  fb->vtable.getpower     = sim_getpower;
+  fb->vtable.setpower     = sim_setpower;
+
 #ifdef CONFIG_SIM_X11FB
-  g_planeinfo.xres_virtual = CONFIG_SIM_FBWIDTH;
-  g_planeinfo.yres_virtual = CONFIG_SIM_FBHEIGHT *
-                             CONFIG_SIM_FRAMEBUFFER_COUNT;
-  ret = sim_x11initialize(CONFIG_SIM_FBWIDTH, CONFIG_SIM_FBHEIGHT,
-                          &g_planeinfo.fbmem, &g_planeinfo.fblen,
-                          &g_planeinfo.bpp, &g_planeinfo.stride,
+  fb->planeinfo.xres_virtual = CONFIG_SIM_FBWIDTH;
+  fb->planeinfo.yres_virtual = CONFIG_SIM_FBHEIGHT *
+                               CONFIG_SIM_FRAMEBUFFER_COUNT;
+
+  ret = sim_x11initialize(display, CONFIG_SIM_FBWIDTH, CONFIG_SIM_FBHEIGHT,
+                          &fb->planeinfo.fbmem, &fb->planeinfo.fblen,
+                          &fb->planeinfo.bpp, &fb->planeinfo.stride,
                           CONFIG_SIM_FRAMEBUFFER_COUNT,
                           CONFIG_SIM_FB_INTERVAL_LINE);
+  if (ret < 0)
+    {
+      gerr("ERROR: sim_x11initialize failed: %d\n", ret);
+      return ret;
+    }
+#else
+  fb->planeinfo.fbmem  = fb->framebuffer;
+  fb->planeinfo.fblen  = FB_SIZE;
+  fb->planeinfo.stride = FB_WIDTH;
+  fb->planeinfo.bpp    = CONFIG_SIM_FBBPP;
 #endif
+
+  fb->planeinfo.display = display;
+  fb->initialized = 1;
+
+  ginfo("Display %d initialized: %dx%d\n", display,
+        CONFIG_SIM_FBWIDTH, CONFIG_SIM_FBHEIGHT);
 
   return ret;
 }
@@ -490,7 +547,7 @@ int up_fbinitialize(int display)
  * Name: up_fbgetvplane
  *
  * Description:
- *   Return a a reference to the framebuffer object for the specified video
+ *   Return a reference to the framebuffer object for the specified video
  *   plane of the specified plane.  Many OSDs support multiple planes of
  *   video.
  *
@@ -507,14 +564,27 @@ int up_fbinitialize(int display)
 
 struct fb_vtable_s *up_fbgetvplane(int display, int vplane)
 {
-  if (vplane == 0)
+  ginfo("display=%d vplane=%d\n", display, vplane);
+
+  if (display < 0 || display >= CONFIG_SIM_X11NWINDOWS)
     {
-      return &g_fbobject;
-    }
-  else
-    {
+      gerr("ERROR: Invalid display number: %d\n", display);
       return NULL;
     }
+
+  if (vplane != 0)
+    {
+      gerr("ERROR: Invalid vplane: %d\n", vplane);
+      return NULL;
+    }
+
+  if (!g_fb[display].initialized)
+    {
+      gerr("ERROR: Display %d not initialized\n", display);
+      return NULL;
+    }
+
+  return &g_fb[display].vtable;
 }
 
 /****************************************************************************
@@ -534,4 +604,10 @@ struct fb_vtable_s *up_fbgetvplane(int display, int vplane)
 
 void up_fbuninitialize(int display)
 {
+  ginfo("display=%d\n", display);
+
+  if (display >= 0 && display < CONFIG_SIM_X11NWINDOWS)
+    {
+      g_fb[display].initialized = 0;
+    }
 }
