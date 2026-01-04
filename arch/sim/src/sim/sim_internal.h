@@ -306,6 +306,20 @@ void sim_registerblockdevice(void);
 /* sim_x11framebuffer.c *****************************************************/
 
 #ifdef CONFIG_SIM_X11FB
+#ifdef CONFIG_SIM_MULTI_SCREEN_SUPPORT
+int sim_x11initialize(int display, unsigned short width, unsigned short height,
+                      void **fbmem, size_t *fblen, unsigned char *bpp,
+                      unsigned short *stride, int fbcount, int interval);
+int sim_x11update(int display);
+int sim_x11openwindow(int display);
+int sim_x11closewindow(int display);
+int sim_x11setoffset(int display, unsigned int offset);
+#ifdef CONFIG_FB_CMAP
+int sim_x11cmap(int display, unsigned short first, unsigned short len,
+                unsigned char *red, unsigned char *green,
+                unsigned char *blue, unsigned char  *transp);
+#endif
+#else
 int sim_x11initialize(unsigned short width, unsigned short height,
                       void **fbmem, size_t *fblen, unsigned char *bpp,
                       unsigned short *stride, int fbcount, int interval);
@@ -317,6 +331,7 @@ int sim_x11setoffset(unsigned int offset);
 int sim_x11cmap(unsigned short first, unsigned short len,
                 unsigned char *red, unsigned char *green,
                 unsigned char *blue, unsigned char  *transp);
+#endif
 #endif
 #endif
 
@@ -339,7 +354,11 @@ void sim_kbdevent(uint32_t key, bool is_press);
 #if defined(CONFIG_SIM_TOUCHSCREEN) || defined(CONFIG_SIM_AJOYSTICK) || \
     defined(CONFIG_ARCH_BUTTONS) || defined(CONFING_SIM_KEYBOARD)
 void sim_x11events(void);
+#ifdef CONFIG_SIM_MULTI_SCREEN_SUPPORT
+void sim_buttonevent(int display, int x, int y, int buttons);
+#else
 void sim_buttonevent(int x, int y, int buttons);
+#endif
 #endif
 
 /* sim_framebuffer.c sim_lcd.c **********************************************/

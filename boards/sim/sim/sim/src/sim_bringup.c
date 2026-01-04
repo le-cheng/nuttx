@@ -300,11 +300,23 @@ int sim_bringup(void)
       syslog(LOG_ERR, "ERROR: vnc_fb_register() failed: %d\n", ret);
     }
 #  else
+#    ifdef CONFIG_SIM_MULTI_SCREEN_SUPPORT
+  int i;
+  for (i = 0; i < CONFIG_SIM_SCREEN_COUNT; i++)
+    {
+      ret = fb_register(i, 0);
+      if (ret < 0)
+        {
+          syslog(LOG_ERR, "ERROR: fb_register(%d) failed: %d\n", i, ret);
+        }
+    }
+#    else
   ret = fb_register(0, 0);
   if (ret < 0)
     {
       syslog(LOG_ERR, "ERROR: fb_register() failed: %d\n", ret);
     }
+#    endif
 #  endif
 #endif
 
@@ -344,11 +356,23 @@ int sim_bringup(void)
 #ifdef CONFIG_SIM_TOUCHSCREEN
   /* Initialize the touchscreen */
 
+#ifdef CONFIG_SIM_MULTI_SCREEN_SUPPORT
+    int j;
+    for (j = 0; j < CONFIG_SIM_SCREEN_COUNT; j++)
+    {
+        ret = sim_tsc_initialize(j);
+        if (ret < 0)
+        {
+            syslog(LOG_ERR, "ERROR: sim_tsc_initialize(%d) failed: %d\n", j, ret);
+        }
+    }
+#else
   ret = sim_tsc_initialize(0);
   if (ret < 0)
     {
       syslog(LOG_ERR, "ERROR: sim_tsc_initialize failed: %d\n", ret);
     }
+#endif
 #endif
 
 #ifdef CONFIG_SIM_KEYBOARD

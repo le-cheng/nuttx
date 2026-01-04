@@ -36,7 +36,15 @@
 
 /* Defined in sim_x11framebuffer.c */
 
+#ifdef CONFIG_SIM_MULTI_SCREEN_SUPPORT
+extern Display *sim_x11getdisplay(int display);
+#else
 extern Display *g_display;
+#endif
+
+#ifndef CONFIG_SIM_SCREEN_COUNT
+#  define CONFIG_SIM_SCREEN_COUNT 1
+#endif
 
 /****************************************************************************
  * Private Functions
@@ -104,10 +112,71 @@ static int sim_buttonmap(int state, int button)
 void sim_x11events(void)
 {
   XEvent event;
+#ifdef CONFIG_SIM_MULTI_SCREEN_SUPPORT
+  int i;
+  Display *display;
 
-  /* Dequeue any pending X11 events. */
+  /* Dequeue any pending X11 events for each display. */
 
-  while (g_display && XPending(g_display) > 0)
+  for (i = 0; i < CONFIG_SIM_SCREEN_COUNT; i++)
+    {
+      display = sim_x11getdisplay(i);
+      if (display == NULL)
+        {
+          continue;
+        }
+
+      while (XPending(display) > 0)
+        {
+          /* Yes, get the event (this should not block since we know there are
+           * pending events)
+           */
+
+          XNextEvent(display, &event);
+
+          /* Then process the event */
+
+          switch (event.type)
+            {
+              #ifdef CONFIG_SIM_KEYBOARD
+              case KeyPress:
+                sim_kbdevent(XLookupKeysym(&event.xkey, 0), true);
+                break;
+              case KeyRelease:
+                sim_kbdevent(XLookupKeysym(&event.xkey, 0), false);
+                break;
+              #endif
+
+              case MotionNotify : /* Enabled by ButtonMotionMask */
+                {
+                  sim_buttonevent(i, event.xmotion.x + i * CONFIG_SIM_FBWIDTH,
+                                  event.xmotion.y,
+                                  sim_buttonmap(event.xmotion.state, 0));
+                }
+                break;
+
+              case ButtonPress  : /* Enabled by ButtonPressMask */
+              case ButtonRelease: /* Enabled by ButtonReleaseMask */
+                {
+                  sim_buttonevent(i, event.xbutton.x + i * CONFIG_SIM_FBWIDTH,
+                                  event.xbutton.y,
+                                  sim_buttonmap(event.xbutton.state,
+                                              event.xbutton.button));
+                }
+                break;
+
+              default:
+                break;
+            }
+        }
+    }
+#else
+  if (g_display == NULL)
+    {
+      return;
+    }
+
+  while (XPending(g_display) > 0)
     {
       /* Yes, get the event (this should not block since we know there are
        * pending events)
@@ -148,4 +217,5 @@ void sim_x11events(void)
             break;
         }
     }
+#endif
 }

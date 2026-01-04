@@ -185,6 +185,7 @@ static struct fb_vtable_s g_fbobject =
  * Private Functions
  ****************************************************************************/
 
+#ifndef CONFIG_SIM_MULTI_SCREEN_SUPPORT
 /****************************************************************************
  * Name: sim_openwindow
  ****************************************************************************/
@@ -535,3 +536,431 @@ struct fb_vtable_s *up_fbgetvplane(int display, int vplane)
 void up_fbuninitialize(int display)
 {
 }
+
+
+#else /* CONFIG_SIM_MULTI_SCREEN_SUPPORT */
+
+
+/****************************************************************************
+ * Private Types
+ ****************************************************************************/
+
+struct sim_fb_s
+{
+  struct fb_vtable_s fbobject;
+  struct fb_videoinfo_s videoinfo;
+  struct fb_planeinfo_s planeinfo;
+#ifdef CONFIG_FB_HWCURSOR
+  struct fb_cursorpos_s cpos;
+#ifdef CONFIG_FB_HWCURSORSIZE
+  struct fb_cursorsize_s csize;
+#endif
+#endif
+  int power;
+  int display_idx;
+  uint8_t *fb_mem; /* For non-X11 case */
+};
+
+#define PRIV(v) ((struct sim_fb_s *)(v))
+
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
+
+static struct sim_fb_s g_sim_fbs[CONFIG_SIM_SCREEN_COUNT];
+
+/****************************************************************************
+ * Name: sim_openwindow
+ ****************************************************************************/
+
+static int sim_openwindow(struct fb_vtable_s *vtable)
+{
+  struct sim_fb_s *priv = PRIV(vtable);
+  int ret = OK;
+  ginfo("vtable=%p display=%d\n", vtable, priv->display_idx);
+
+#ifdef CONFIG_SIM_X11FB
+  ret = sim_x11openwindow(priv->display_idx);
+#endif
+
+  return ret;
+}
+
+/****************************************************************************
+ * Name: sim_closewindow
+ ****************************************************************************/
+
+static int sim_closewindow(struct fb_vtable_s *vtable)
+{
+  struct sim_fb_s *priv = PRIV(vtable);
+  int ret = OK;
+  ginfo("vtable=%p display=%d\n", vtable, priv->display_idx);
+
+#ifdef CONFIG_SIM_X11FB
+  ret = sim_x11closewindow(priv->display_idx);
+#endif
+
+  return ret;
+}
+
+/****************************************************************************
+ * Name: sim_getvideoinfo
+ ****************************************************************************/
+
+static int sim_getvideoinfo(struct fb_vtable_s *vtable,
+                           struct fb_videoinfo_s *vinfo)
+{
+  struct sim_fb_s *priv = PRIV(vtable);
+
+  ginfo("vtable=%p vinfo=%p\n", vtable, vinfo);
+  if (vtable && vinfo)
+    {
+      memcpy(vinfo, &priv->videoinfo, sizeof(struct fb_videoinfo_s));
+      return OK;
+    }
+
+  gerr("ERROR: Returning EINVAL\n");
+  return -EINVAL;
+}
+
+/****************************************************************************
+ * Name: sim_getplaneinfo
+ ****************************************************************************/
+
+static int sim_getplaneinfo(struct fb_vtable_s *vtable, int planeno,
+                           struct fb_planeinfo_s *pinfo)
+{
+  struct sim_fb_s *priv = PRIV(vtable);
+  ginfo("vtable=%p planeno=%d pinfo=%p\n", vtable, planeno, pinfo);
+  if (vtable && planeno == 0 && pinfo)
+  {
+      memcpy(pinfo, &priv->planeinfo, sizeof(struct fb_planeinfo_s));
+      return OK;
+  }
+
+  gerr("ERROR: Returning EINVAL\n");
+  return -EINVAL;
+}
+
+/****************************************************************************
+ * Name: sim_getcmap
+ ****************************************************************************/
+
+#ifdef CONFIG_FB_CMAP
+static int sim_getcmap(struct fb_vtable_s *vtable,
+                      struct fb_cmap_s *cmap)
+{
+  int len;
+  int i;
+
+  ginfo("vtable=%p cmap=%p len=%d\n", vtable, cmap, cmap->len);
+  if (vtable && cmap)
+    {
+      for (i = cmap->first, len = 0; i < 256 && len < cmap->len; i++, len++)
+        {
+          cmap->red[i]    = i;
+          cmap->green[i]  = i;
+          cmap->blue[i]   = i;
+#ifdef CONFIG_FB_TRANSPARENCY
+          cmap->transp[i] = i;
+#endif
+        }
+
+      cmap->len = len;
+      return OK;
+    }
+
+  gerr("ERROR: Returning EINVAL\n");
+  return -EINVAL;
+}
+#endif
+
+/****************************************************************************
+ * Name: sim_putcmap
+ ****************************************************************************/
+
+#ifdef CONFIG_FB_CMAP
+static int sim_putcmap(struct fb_vtable_s *vtable,
+                      const struct fb_cmap_s *cmap)
+{
+  struct sim_fb_s *priv = PRIV(vtable);
+#ifdef CONFIG_SIM_X11FB
+  return sim_x11cmap(priv->display_idx, cmap->first, cmap->len, cmap->red, cmap->green,
+                    cmap->blue, NULL);
+#else
+  ginfo("vtable=%p cmap=%p len=%d\n", vtable, cmap, cmap->len);
+  if (vtable && cmap)
+    {
+      return OK;
+    }
+
+  gerr("ERROR: Returning EINVAL\n");
+  return -EINVAL;
+#endif
+}
+#endif
+
+/****************************************************************************
+ * Name: sim_getcursor
+ ****************************************************************************/
+
+#ifdef CONFIG_FB_HWCURSOR
+static int sim_getcursor(struct fb_vtable_s *vtable,
+                        struct fb_cursorattrib_s *attrib)
+{
+  struct sim_fb_s *priv = PRIV(vtable);
+  ginfo("vtable=%p attrib=%p\n", vtable, attrib);
+  if (vtable && attrib)
+    {
+#ifdef CONFIG_FB_HWCURSORIMAGE
+      attrib->fmt      = FB_FMT;
+#endif
+      ginfo("pos:      (x=%d, y=%d)\n", priv->cpos.x, priv->cpos.y);
+      attrib->pos      = priv->cpos;
+#ifdef CONFIG_FB_HWCURSORSIZE
+      attrib->mxsize.h = CONFIG_SIM_FBHEIGHT;
+      attrib->mxsize.w = CONFIG_SIM_FBWIDTH;
+      ginfo("size:     (h=%d, w=%d)\n", priv->csize.h, priv->csize.w);
+      attrib->size     = priv->csize;
+#endif
+      return OK;
+    }
+
+  gerr("ERROR: Returning EINVAL\n");
+  return -EINVAL;
+}
+#endif
+
+/****************************************************************************
+ * Name: sim_setcursor
+ ****************************************************************************/
+
+#ifdef CONFIG_FB_HWCURSOR
+static int sim_setcursor(struct fb_vtable_s *vtable,
+                       struct fb_setcursor_s *settings)
+{
+  struct sim_fb_s *priv = PRIV(vtable);
+  ginfo("vtable=%p settings=%p\n", vtable, settings);
+  if (vtable && settings)
+    {
+      ginfo("flags:   %02x\n", settings->flags);
+      if ((flags & FB_CUR_SETPOSITION) != 0)
+        {
+          priv->cpos = settings->pos;
+          ginfo("pos:     (h:%d, w:%d)\n", priv->cpos.x, priv->cpos.y);
+        }
+
+#ifdef CONFIG_FB_HWCURSORSIZE
+      if ((flags & FB_CUR_SETSIZE) != 0)
+        {
+          priv->csize = settings->size;
+          ginfo("size:    (h:%d, w:%d)\n", priv->csize.h, priv->csize.w);
+        }
+#endif
+
+#ifdef CONFIG_FB_HWCURSORIMAGE
+      if ((flags & FB_CUR_SETIMAGE) != 0)
+        {
+          ginfo("image:   (h:%d, w:%d) @ %p\n",
+               settings->img.height, settings->img.width,
+               settings->img.image);
+        }
+
+#endif
+      return OK;
+    }
+
+  gerr("ERROR: Returning EINVAL\n");
+  return -EINVAL;
+}
+#endif
+
+/****************************************************************************
+ * Name: sim_getpower
+ ****************************************************************************/
+
+static int sim_getpower(struct fb_vtable_s *vtable)
+{
+  struct sim_fb_s *priv = PRIV(vtable);
+  ginfo("vtable=%p power=%d\n", vtable, priv->power);
+  return priv->power;
+}
+
+/****************************************************************************
+ * Name: sim_setpower
+ ****************************************************************************/
+
+static int sim_setpower(struct fb_vtable_s *vtable, int power)
+{
+  struct sim_fb_s *priv = PRIV(vtable);
+  ginfo("vtable=%p power=%d\n", vtable, power);
+  if (power < 0)
+    {
+      gerr("ERROR: power=%d < 0\n", power);
+      return -EINVAL;
+    }
+
+  priv->power = power;
+  return OK;
+}
+
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
+
+/****************************************************************************
+ * Name: sim_x11loop
+ ****************************************************************************/
+
+#ifdef CONFIG_SIM_X11FB
+void sim_x11loop(void) {
+  int i;
+  union fb_paninfo_u info;
+
+  for (i = 0; i < CONFIG_SIM_SCREEN_COUNT; i++) {
+
+    struct sim_fb_s *priv = &g_sim_fbs[i];
+
+    if (priv->planeinfo.fbmem == NULL)
+      continue; /* Not initialized */
+
+    fb_notify_vsync(&priv->fbobject);
+    if (fb_paninfo_count(&priv->fbobject, FB_NO_OVERLAY) > 1) {
+      fb_remove_paninfo(&priv->fbobject, FB_NO_OVERLAY);
+    }
+
+    if (fb_peek_paninfo(&priv->fbobject, &info, FB_NO_OVERLAY) == OK) {
+      sim_x11setoffset(i, info.planeinfo.yoffset * info.planeinfo.stride);
+    }
+
+    sim_x11update(i);
+  }
+}
+#endif
+
+// static const struct fb_vtable_s g_sim_vtable =
+// {
+//   .getvideoinfo = sim_getvideoinfo,
+//   .getplaneinfo = sim_getplaneinfo,
+// #ifdef CONFIG_FB_CMAP
+//   .getcmap      = sim_getcmap,
+//   .putcmap      = sim_putcmap,
+// #endif
+// #ifdef CONFIG_FB_HWCURSOR
+//   .getcursor    = sim_getcursor,
+//   .setcursor    = sim_setcursor,
+// #endif
+//   .open         = sim_openwindow,
+//   .close        = sim_closewindow,
+//   .getpower     = sim_getpower,
+//   .setpower     = sim_setpower,
+// };
+
+/****************************************************************************
+ * Name: up_fbinitialize
+ *
+ * Description:
+ *   Initialize the framebuffer video hardware associated with the display.
+ *
+ * Input Parameters:
+ *   display - In the case of hardware with multiple displays, this
+ *     specifies the display.  Normally this is zero.
+ *
+ * Returned Value:
+ *   Zero is returned on success; a negated errno value is returned on any
+ *   failure.
+ *
+ ****************************************************************************/
+
+int up_fbinitialize(int display) {
+  	int ret = OK;
+	struct sim_fb_s *priv;
+
+	if (display < 0 || display >= CONFIG_SIM_SCREEN_COUNT) {
+		return -EINVAL;
+	}
+
+	priv = &g_sim_fbs[display];
+
+	/* Initialize the vtable */
+	memcpy(&priv->fbobject, &g_fbobject, sizeof(struct fb_vtable_s));
+	priv->fbobject.priv = priv;
+
+	priv->display_idx = display;
+	priv->power = g_fb_power;
+
+	/* Initialize videoinfo */
+	memcpy(&priv->videoinfo, &g_videoinfo, sizeof(struct fb_videoinfo_s));
+
+#ifdef CONFIG_SIM_X11FB
+	g_planeinfo.xres_virtual = CONFIG_SIM_FBWIDTH;
+    g_planeinfo.yres_virtual = CONFIG_SIM_FBHEIGHT *
+                            	CONFIG_SIM_FRAMEBUFFER_COUNT;
+    ret = sim_x11initialize(display, CONFIG_SIM_FBWIDTH, CONFIG_SIM_FBHEIGHT,
+                          &g_planeinfo.fbmem, &g_planeinfo.fblen,
+                          &g_planeinfo.bpp, &g_planeinfo.stride,
+                          CONFIG_SIM_FRAMEBUFFER_COUNT,
+                          CONFIG_SIM_FB_INTERVAL_LINE);
+#endif
+	g_planeinfo.display = display;
+	memcpy(&priv->planeinfo, &g_planeinfo, sizeof(struct fb_planeinfo_s));
+
+	return ret;
+}
+
+/****************************************************************************
+ * Name: up_fbgetvplane
+ *
+ * Description:
+ *   Return a a reference to the framebuffer object for the specified video
+ *   plane of the specified plane.  Many OSDs support multiple planes of
+ *   video.
+ *
+ * Input Parameters:
+ *   display - In the case of hardware with multiple displays, this
+ *     specifies the display.  Normally this is zero.
+ *   vplane - Identifies the plane being queried.
+ *
+ * Returned Value:
+ *   A non-NULL pointer to the frame buffer access structure is returned on
+ *   success; NULL is returned on any failure.
+ *
+ ****************************************************************************/
+
+struct fb_vtable_s *up_fbgetvplane(int display, int vplane)
+{
+  if (display >= 0 && display < CONFIG_SIM_SCREEN_COUNT && vplane == 0)
+    {
+      return &g_sim_fbs[display].fbobject;
+    }
+  else
+    {
+      return NULL;
+    }
+}
+
+/****************************************************************************
+ * Name: up_fbuninitialize
+ *
+ * Description:
+ *   Uninitialize the framebuffer support for the specified display.
+ *
+ * Input Parameters:
+ *   display - In the case of hardware with multiple displays, this
+ *     specifies the display.  Normally this is zero.
+ *
+ * Returned Value:
+ *   None
+ *
+ ****************************************************************************/
+
+void up_fbuninitialize(int display)
+{
+  if (display >= 0 && display < CONFIG_SIM_SCREEN_COUNT)
+    {
+#ifndef CONFIG_SIM_X11FB
+       free(g_sim_fbs[display].fb_mem);
+#endif
+    }
+}
+#endif /* CONFIG_SIM_MULTI_SCREEN_SUPPORT */

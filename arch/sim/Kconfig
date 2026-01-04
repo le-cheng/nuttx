@@ -441,6 +441,22 @@ config SIM_X11FB
 		Use X11 to provide graphics and input emulation to interact with host.
 
 if SIM_X11FB
+
+config SIM_MULTI_SCREEN_SUPPORT
+	bool "Support multi-screen and multi-touch safely"
+	default n
+	---help---
+		Enable support for multiple screens and safe multi-touch handling via work queue.
+
+config SIM_SCREEN_COUNT
+	int "Simulated screen count"
+	default 1
+	depends on SIM_MULTI_SCREEN_SUPPORT
+	---help---
+		The number of X11 windows to simulate. Each window corresponds to a display.
+		Note: SIM_FRAMEBUFFER_COUNT defines the total number of framebuffers, which
+		may include back buffers for double buffering.
+
 config SIM_X11NOSHM
 	bool "Don't use shared memory with X11"
 	default n
@@ -482,6 +498,14 @@ config SIM_FRAMEBUFFER_COUNT
 	---help---
 		Framebuffer count.
 		Simulated framebuffer count.  Default: 2
+
+config SIM_TOUCHSCREEN_COUNT
+	int "Touchscreen count"
+	depends on SIM_TOUCHSCREEN
+	default 2
+	---help---
+		Touchscreen count.
+		Simulated touchscreen count.  Default: 2
 
 config SIM_FB_INTERVAL_LINE
 	int "The line between non-consecutive framebuffers"
