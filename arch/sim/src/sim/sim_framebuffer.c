@@ -838,24 +838,6 @@ void sim_x11loop(void) {
 }
 #endif
 
-// static const struct fb_vtable_s g_sim_vtable =
-// {
-//   .getvideoinfo = sim_getvideoinfo,
-//   .getplaneinfo = sim_getplaneinfo,
-// #ifdef CONFIG_FB_CMAP
-//   .getcmap      = sim_getcmap,
-//   .putcmap      = sim_putcmap,
-// #endif
-// #ifdef CONFIG_FB_HWCURSOR
-//   .getcursor    = sim_getcursor,
-//   .setcursor    = sim_setcursor,
-// #endif
-//   .open         = sim_openwindow,
-//   .close        = sim_closewindow,
-//   .getpower     = sim_getpower,
-//   .setpower     = sim_setpower,
-// };
-
 /****************************************************************************
  * Name: up_fbinitialize
  *

@@ -499,14 +499,6 @@ config SIM_FRAMEBUFFER_COUNT
 		Framebuffer count.
 		Simulated framebuffer count.  Default: 2
 
-config SIM_TOUCHSCREEN_COUNT
-	int "Touchscreen count"
-	depends on SIM_TOUCHSCREEN
-	default 2
-	---help---
-		Touchscreen count.
-		Simulated touchscreen count.  Default: 2
-
 config SIM_FB_INTERVAL_LINE
 	int "The line between non-consecutive framebuffers"
 	depends on SIM_FRAMEBUFFER && SIM_FRAMEBUFFER_COUNT > 1
